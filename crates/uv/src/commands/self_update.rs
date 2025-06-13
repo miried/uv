@@ -67,18 +67,6 @@ pub(crate) async fn self_update(
     // This makes us behave better if someone manually installs a random version of uv
     // in a way that doesn't update the receipt.
     let current_version: Version = env!("CARGO_PKG_VERSION").parse()?;
-
-    writeln!(
-        printer.stderr(),
-        "{}",
-        format_args!(
-            "{}{} Current version: {}",
-            "info".cyan().bold(),
-            ":".bold(),
-            format!("v{current_version}").bold().cyan(),
-        )
-    )?;
-
     let _ = updater.set_current_version(current_version.clone());
 
     // Ensure the receipt is for the current binary. If it's not, then the user likely has multiple
@@ -137,6 +125,17 @@ pub(crate) async fn self_update(
         printer.stderr(),
         "{}",
         format_args!(
+            "{}{} Current version: {}",
+            "info".cyan().bold(),
+            ":".bold(),
+            format!("v{current_version}").bold().cyan(),
+        )
+    )?;
+
+    writeln!(
+        printer.stderr(),
+        "{}",
+        format_args!(
             "{}{} Latest/requested version: {}",
             "info".cyan().bold(),
             ":".bold(),
@@ -144,41 +143,66 @@ pub(crate) async fn self_update(
         )
     )?;
 
-    if dry_run {
-        if updater.is_update_needed().await? {
+    if updater.is_update_needed().await? {
+        if dry_run {
             writeln!(
                 printer.stderr(),
                 "{}",
-                format_args!("{}{} Would update uv.", "info".cyan().bold(), ":".bold())
+                format_args!(
+                    "{}{} Update available. Run without --dry-run to apply it.",
+                    "info".cyan().bold(),
+                    ":".bold()
+                )
             )?;
-        } else {
-            if current_version == new_version {
-                writeln!(
-                    printer.stderr(),
-                    "{}",
-                    format_args!(
-                        "{}{} Would not update uv. Already on the latest/requested version of uv.",
-                        "info".cyan().bold(),
-                        ":".bold(),
-                    )
-                )?;
-            } else {
-                writeln!(
-                    printer.stderr(),
-                    "{}",
-                    format_args!(
-                        "{}{} Would not update uv. Executable was not determined to be eligible.",
-                        "info".cyan().bold(),
-                        ":".bold(),
-                    )
-                )?;
-            }
-        }
-        return Ok(ExitStatus::Success);
-    }
 
-    // Run the updater. This involves a network request, since we need to determine the latest
-    // available version of uv.
+            Ok(ExitStatus::Success)
+        } else {
+            writeln!(
+                printer.stderr(),
+                "{}",
+                format_args!("{}{} Running update...", "info".cyan().bold(), ":".bold())
+            )?;
+
+            try_updater(updater, current_version, token, printer).await
+        }
+    } else {
+        if current_version == new_version {
+            writeln!(
+                printer.stderr(),
+                "{}",
+                format_args!(
+                    "{}{} You're already on the latest version of uv ({}). No update needed.",
+                    "success".green().bold(),
+                    ":".bold(),
+                    format!("v{current_version}").bold().cyan()
+                )
+            )?;
+
+            Ok(ExitStatus::Success)
+        } else {
+            writeln!(
+                printer.stderr(),
+                "{}",
+                format_args!(
+                    "{}{} Not running update. Executable was not determined to be eligible.",
+                    "error".red().bold(),
+                    ":".bold(),
+                )
+            )?;
+
+            Ok(ExitStatus::Error)
+        }
+    }
+}
+
+/// Run the updater. This involves a network request, since we need to determine the latest
+/// available version of uv.
+async fn try_updater(
+    updater: &mut AxoUpdater,
+    current_version: Version,
+    token: Option<String>,
+    printer: Printer,
+) -> Result<ExitStatus> {
     match updater.run().await {
         Ok(Some(result)) => {
             let direction = if result
@@ -216,6 +240,8 @@ pub(crate) async fn self_update(
                     .cyan()
                 )
             )?;
+
+            Ok(ExitStatus::Success)
         }
         Ok(None) => {
             writeln!(
@@ -228,9 +254,11 @@ pub(crate) async fn self_update(
                     format!("v{current_version}").bold().cyan()
                 )
             )?;
+
+            Ok(ExitStatus::Success)
         }
         Err(err) => {
-            return if let AxoupdateError::Reqwest(err) = err {
+            if let AxoupdateError::Reqwest(err) = err {
                 if err.status() == Some(http::StatusCode::FORBIDDEN) && token.is_none() {
                     writeln!(
                         printer.stderr(),
@@ -248,9 +276,7 @@ pub(crate) async fn self_update(
                 }
             } else {
                 Err(err.into())
-            };
+            }
         }
     }
-
-    Ok(ExitStatus::Success)
 }
